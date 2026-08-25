@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: growth-radar
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_PIN
+        value: 976312
+      - key: APP_URL
+        value: https://growth-radar.onrender.com # Change this if your render URL is different
+      - key: TURSO_DB_URL
+        value: libsql://growth-radar-kd10.aws-ap-south-1.turso.io
+      - key: TURSO_AUTH_TOKEN
+        sync: false # Requires manual entry in Render Dashboard
+      - key: GROQ_API_KEY
+        sync: false # Requires manual entry in Render Dashboard
+      - key: GOOGLE_CLIENT_ID
+        sync: false # Requires manual entry in Render Dashboard
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false # Requires manual entry in Render Dashboard
