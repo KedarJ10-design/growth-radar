@@ -67,11 +67,16 @@ const aiLimiter = rateLimit({
 });
 
 // ── Google OAuth Setup ──────────────────────────────────────
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  `${API_URL}/api/calendar/callback`
-);
+function getOAuthClient() {
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    throw new Error("Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in environment variables");
+  }
+  return new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    `${API_URL}/api/calendar/callback`
+  );
+}
 
 // We will load tokens asynchronously after DB is ready
 
@@ -80,17 +85,23 @@ app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toI
 
 // ── Google Calendar Sync ──────────────────────────────────
 app.get('/api/calendar/auth', (req, res) => {
-  const url = oauth2Client.generateAuthUrl({
-    access_type: 'offline', 
-    prompt: 'consent', 
-    login_hint: 'jadhavkedar55@gmail.com',
-    scope: ['https://www.googleapis.com/auth/calendar.events']
-  });
-  res.redirect(url);
+  try {
+    const client = getOAuthClient();
+    const url = client.generateAuthUrl({
+      access_type: 'offline', 
+      prompt: 'consent', 
+      login_hint: 'jadhavkedar55@gmail.com',
+      scope: ['https://www.googleapis.com/auth/calendar.events']
+    });
+    res.redirect(url);
+  } catch (err) {
+    res.status(500).send(`Server Configuration Error: ${err.message}`);
+  }
 });
 
 app.get('/api/calendar/logout', async (req, res) => {
-  oauth2Client.setCredentials({});
+  const client = getOAuthClient();
+  client.setCredentials({});
   await setSetting('google_tokens', '');
   res.redirect(`${APP_URL}/`);
 });
@@ -100,8 +111,9 @@ app.get('/api/calendar/callback', async (req, res) => {
   if (!code) return res.status(400).send('No code provided');
   
   try {
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
+    const client = getOAuthClient();
+    const { tokens } = await client.getToken(code);
+    client.setCredentials(tokens);
     await setSetting('google_tokens', JSON.stringify(tokens));
     
     res.redirect(`${APP_URL}/?calendar_sync=success`);
@@ -118,12 +130,13 @@ app.post('/api/calendar/add', async (req, res) => {
       return res.status(401).json({ error: 'Not authenticated with Google' });
     }
     
-    oauth2Client.setCredentials(JSON.parse(tokens));
+    const client = getOAuthClient();
+    client.setCredentials(JSON.parse(tokens));
     
     const { schedule, date } = req.body; 
     if (!schedule || !schedule.length) return res.status(400).json({ error: 'No schedule provided' });
     
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const calendar = google.calendar({ version: 'v3', auth: client });
     let addedCount = 0;
     
     for (const block of schedule) {
@@ -305,7 +318,8 @@ async function startServer() {
     try {
       const savedTokens = await getSetting('google_tokens');
       if (savedTokens) {
-        oauth2Client.setCredentials(JSON.parse(savedTokens));
+        const client = getOAuthClient();
+        client.setCredentials(JSON.parse(savedTokens));
         console.log('✅ Google OAuth tokens loaded');
       }
     } catch (e) {
