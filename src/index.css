@@ -395,7 +395,44 @@ input[type="range"]::-webkit-slider-thumb:hover {
 /* ── Responsive ─────────────────────────────────────────── */
 @media (max-width: 768px) {
   .grid-2 { grid-template-columns: 1fr; }
+  .grid-3 { grid-template-columns: 1fr; } /* Stack everything on mobile */
+  
+  .header { padding: 12px 16px; }
+  .header h1 { font-size: 20px; }
+  
+  .tabs { 
+    padding: 0 16px; 
+    overflow-x: auto; /* Scroll tabs horizontally */
+    white-space: nowrap;
+  }
+  .tabs button {
+    padding: 12px 16px;
+    font-size: 14px;
+  }
+  
+  .card { padding: 16px; }
+  
+  .table-wrapper {
+    overflow-x: auto;
+  }
+  table th, table td {
+    padding: 10px;
+    font-size: 13px;
+  }
+  
+  input, select, textarea, button {
+    font-size: 16px; /* Prevents iOS auto-zoom */
+  }
+  
+  .pingate-box {
+    margin: 20px;
+    padding: 24px 20px;
+  }
+  .pingate-box h1 {
+    font-size: 24px;
+  }
+}
+
+@media (min-width: 481px) and (max-width: 768px) {
   .grid-3 { grid-template-columns: repeat(2, 1fr); }
-  .header { padding: 16px 20px; }
-  .tabs { padding: 0 16px; }
 }
