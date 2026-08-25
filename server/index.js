@@ -83,6 +83,22 @@ function getOAuthClient() {
 // ── Health ─────────────────────────────────────────────────
 app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
+// ── Debug OAuth (temporary - remove after fixing) ─────────
+app.get('/api/debug-oauth', (_, res) => {
+  const cid = process.env.GOOGLE_CLIENT_ID || '';
+  const csec = process.env.GOOGLE_CLIENT_SECRET || '';
+  const apiUrl = API_URL;
+  res.json({
+    clientIdLength: cid.length,
+    clientIdPreview: cid ? `${cid.substring(0, 10)}...${cid.substring(cid.length - 5)}` : 'EMPTY',
+    secretLength: csec.length,
+    secretPreview: csec ? `${csec.substring(0, 8)}...` : 'EMPTY',
+    redirectUri: `${apiUrl}/api/calendar/callback`,
+    apiUrl: apiUrl,
+    nodeEnv: process.env.NODE_ENV
+  });
+});
+
 // ── Google Calendar Sync ──────────────────────────────────
 app.get('/api/calendar/auth', (req, res) => {
   try {
