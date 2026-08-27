@@ -1,9 +1,16 @@
 import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 login attempts per window
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.' }
+});
 
 export function setupAuth(app) {
   app.use(cookieParser());
   
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', loginLimiter, (req, res) => {
     const { pin } = req.body;
     const correctPin = process.env.APP_PIN || '976312';
     
