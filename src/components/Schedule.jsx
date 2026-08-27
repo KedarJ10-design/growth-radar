@@ -148,7 +148,14 @@ export default function Schedule({ dims, onGenerate, generatedSchedule, loading,
         background: 'var(--accent-bg)', padding: '16px 20px'
       }}>
         <div className="label" style={{ color: 'var(--accent-light)', marginBottom: 6 }}>✨ AI Insight</div>
-        <div style={{ fontSize: 13, color: 'var(--accent-light)', lineHeight: 1.6 }}>{generatedSchedule.insight}</div>
+        <div style={{ fontSize: 13, color: 'var(--accent-light)', lineHeight: 1.6 }}>
+          <strong>Insight: </strong>{generatedSchedule.insight}
+        </div>
+        {generatedSchedule.path_context && (
+          <div style={{ fontSize: 13, color: 'var(--accent-light)', lineHeight: 1.6, marginTop: 8 }}>
+            <strong>Learning Path: </strong>{generatedSchedule.path_context}
+          </div>
+        )}
       </div>
 
       {/* Schedule blocks */}
@@ -173,6 +180,22 @@ export default function Schedule({ dims, onGenerate, generatedSchedule, loading,
                   <span className="badge" style={{ background: `${col}18`, color: col }}>{block.category}</span>
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{block.desc}</div>
+                {block.search_query && (
+                  <div style={{ 
+                    marginTop: 8, 
+                    padding: '6px 10px', 
+                    background: 'rgba(255,255,255,0.05)', 
+                    borderRadius: 4,
+                    fontSize: 12,
+                    color: 'var(--text-primary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6
+                  }}>
+                    <span>🔍</span>
+                    <span><strong>Search:</strong> {block.search_query}</span>
+                  </div>
+                )}
               </div>
             </div>
           );

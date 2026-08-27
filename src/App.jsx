@@ -9,6 +9,7 @@ import AddDimension from './components/AddDimension';
 import DailyLog from './components/DailyLog';
 import Settings from './components/Settings';
 import PinGate from './components/PinGate';
+import PrivacyPolicy from './components/PrivacyPolicy';
 
 const TABS = [
   ['dashboard',  '📊 Dashboard'],
@@ -102,12 +103,17 @@ export default function App() {
   const shown = filter === 'All' ? dims : dims.filter(d => d.category === filter);
   const avg = dims.length ? (dims.reduce((s, d) => s + d.score, 0) / dims.length).toFixed(1) : 0;
 
+  // Handle public routes before PinGate
+  if (window.location.pathname === '/privacy-policy') {
+    return <PrivacyPolicy />;
+  }
+
   if (!loaded) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--text-muted)' }}>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 32, marginBottom: 12, animation: 'pulse 1.5s infinite' }}>⚡</div>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>Loading Growth Radar…</div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>Loading Radar System…</div>
         </div>
       </div>
     );

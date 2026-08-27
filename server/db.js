@@ -170,8 +170,32 @@ export async function createSnapshot() {
 // ── Daily Log Queries ──────────────────────────────────────
 export async function getDailyLogs(date) {
   const result = await db.execute({
-    sql: 'SELECT dl.*, d.name as dim_name, d.category as dim_category FROM daily_logs dl LEFT JOIN dimensions d ON dl.dimension_id = d.id WHERE dl.date = ? ORDER BY dl.created_at ASC',
+    sql: `
+      SELECT l.*, d.name as dimension_name, d.category as dimension_category 
+      FROM daily_logs l 
+      LEFT JOIN dimensions d ON l.dimension_id = d.id 
+      WHERE l.date = ?
+      ORDER BY l.id ASC
+    `,
     args: [date]
+  });
+  return result.rows;
+}
+
+// AI Memory Helper: Get recent logs for specific dimensions (regardless of how many days ago)
+export async function getRecentLogsForDims(dimIds, limit = 15) {
+  if (!dimIds || dimIds.length === 0) return [];
+  const placeholders = dimIds.map(() => '?').join(',');
+  const result = await db.execute({
+    sql: `
+      SELECT l.date, l.activity, l.duration_min, l.notes, l.completed, d.name as dimension_name 
+      FROM daily_logs l 
+      JOIN dimensions d ON l.dimension_id = d.id 
+      WHERE l.dimension_id IN (${placeholders})
+      ORDER BY l.date DESC, l.id DESC
+      LIMIT ?
+    `,
+    args: [...dimIds, limit]
   });
   return result.rows;
 }
@@ -249,6 +273,15 @@ export async function saveSchedule({ date, schedule, insight }) {
 export async function getSchedules() {
   const result = await db.execute('SELECT * FROM schedules ORDER BY created_at DESC LIMIT 20');
   return result.rows.map(s => ({ ...s, schedule: JSON.parse(s.schedule) }));
+}
+
+// AI Memory Helper: Get recent schedules overall to prevent repeating exact blocks
+export async function getRecentSchedulesLimit(limit = 3) {
+  const result = await db.execute({
+    sql: 'SELECT date, schedule FROM schedules ORDER BY date DESC LIMIT ?',
+    args: [limit]
+  });
+  return result.rows;
 }
 
 // ── Stats ──────────────────────────────────────────────────

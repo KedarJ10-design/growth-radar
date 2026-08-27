@@ -16,7 +16,7 @@ import {
   initDb, getAllDimensions, addDimension, updateDimension, deleteDimension,
   createSnapshot, getAllSnapshots,
   getDailyLogs, addDailyLog, toggleDailyLog, deleteDailyLog, getStreak,
-  saveSchedule, getSchedules,
+  saveSchedule, getSchedules, getRecentLogsForDims, getRecentSchedulesLimit,
   getStats, getAllDataForExport,
   getSetting, setSetting
 } from './db.js';
@@ -67,14 +67,22 @@ const aiLimiter = rateLimit({
 });
 
 // ── Google OAuth Setup ──────────────────────────────────────
-function getOAuthClient() {
+function getOAuthClient(req) {
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
     throw new Error("Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in environment variables");
   }
+  
+  let redirectUri = `${API_URL}/api/calendar/callback`;
+  if (req && process.env.NODE_ENV === 'production') {
+     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+     const host = req.get('host');
+     redirectUri = `${protocol}://${host}/api/calendar/callback`;
+  }
+
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    `${API_URL}/api/calendar/callback`
+    redirectUri
   );
 }
 
@@ -102,7 +110,7 @@ app.get('/api/debug-oauth', (_, res) => {
 // ── Google Calendar Sync ──────────────────────────────────
 app.get('/api/calendar/auth', (req, res) => {
   try {
-    const client = getOAuthClient();
+    const client = getOAuthClient(req);
     const url = client.generateAuthUrl({
       access_type: 'offline', 
       prompt: 'consent', 
@@ -116,7 +124,7 @@ app.get('/api/calendar/auth', (req, res) => {
 });
 
 app.get('/api/calendar/logout', async (req, res) => {
-  const client = getOAuthClient();
+  const client = getOAuthClient(req);
   client.setCredentials({});
   await setSetting('google_tokens', '');
   res.redirect(`${APP_URL}/`);
@@ -127,7 +135,7 @@ app.get('/api/calendar/callback', async (req, res) => {
   if (!code) return res.status(400).send('No code provided');
   
   try {
-    const client = getOAuthClient();
+    const client = getOAuthClient(req);
     const { tokens } = await client.getToken(code);
     client.setCredentials(tokens);
     await setSetting('google_tokens', JSON.stringify(tokens));
@@ -146,7 +154,7 @@ app.post('/api/calendar/add', async (req, res) => {
       return res.status(401).json({ error: 'Not authenticated with Google' });
     }
     
-    const client = getOAuthClient();
+    const client = getOAuthClient(req);
     client.setCredentials(JSON.parse(tokens));
     
     const { schedule, date } = req.body; 
@@ -268,7 +276,35 @@ app.get('/api/daily-log-streak', async (_, res) => {
 app.post('/api/schedule/generate', aiLimiter, async (req, res) => {
   try {
     const dims = await getAllDimensions();
-    const result = await generateSchedule({ dims, ...req.body });
+    
+    // Fetch History Context for AI Memory
+    let historyContext = "";
+    try {
+      const selectedDims = req.body.selectedDims || [];
+      const focusDimIds = selectedDims.length > 0 ? selectedDims : dims.sort((a, b) => a.score - b.score).slice(0, 5).map(d => d.id);
+      
+      const recentLogs = await getRecentLogsForDims(focusDimIds);
+      const recentSchedules = await getRecentSchedulesLimit(3);
+      
+      let logsText = recentLogs.map(l => `- [${l.date}] ${l.dimension_name}: ${l.activity} (Completed: ${l.completed ? 'Yes' : 'No'}) ${l.notes ? 'Notes: '+l.notes : ''}`).join('\n');
+      
+      let schedulesText = recentSchedules.map(s => {
+        try {
+          const parsed = JSON.parse(s.schedule);
+          return `- [${s.date}] ${parsed.map(i => i.title).join(', ')}`;
+        } catch(e) { return ''; }
+      }).filter(Boolean).join('\n');
+      
+      if (logsText || schedulesText) {
+        historyContext = "PAST CONTEXT & CONTINUOUS PATH:\n";
+        if (logsText) historyContext += "User recently logged these activities related to the focus topics:\n" + logsText + "\n\n";
+        if (schedulesText) historyContext += "You recently scheduled these blocks for the user:\n" + schedulesText + "\n\n";
+      }
+    } catch(e) {
+      console.error("Failed to build history context:", e.message);
+    }
+
+    const result = await generateSchedule({ dims, historyContext, ...req.body });
     const today = new Date().toISOString().split('T')[0];
     await saveSchedule({ date: today, schedule: result.schedule, insight: result.insight });
     res.json(result);
@@ -334,7 +370,7 @@ async function startServer() {
     try {
       const savedTokens = await getSetting('google_tokens');
       if (savedTokens) {
-        const client = getOAuthClient();
+        const client = getOAuthClient(req);
         client.setCredentials(JSON.parse(savedTokens));
         console.log('✅ Google OAuth tokens loaded');
       }
