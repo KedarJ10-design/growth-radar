@@ -373,7 +373,7 @@ async function startServer() {
     try {
       const savedTokens = await getSetting('google_tokens');
       if (savedTokens) {
-        const client = getOAuthClient(req);
+        const client = getOAuthClient(null);
         client.setCredentials(JSON.parse(savedTokens));
         console.log('✅ Google OAuth tokens loaded');
       }
