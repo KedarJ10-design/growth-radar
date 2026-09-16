@@ -3,29 +3,55 @@ import { CATS, catColor, scoreHue } from '../constants';
 
 export default function Dashboard({ dims, filter }) {
   const shown = filter === 'All' ? dims : dims.filter(d => d.category === filter);
-  const radarData = shown.map(d => ({
-    subject: d.name.length > 11 ? d.name.slice(0, 10) + '…' : d.name,
-    score: d.score,
-    fullMark: 10,
-  }));
+  const radarData = shown.map(d => {
+    const rpgLvl = d.rpg_level || 1;
+    return {
+      subject: d.name.length > 11 ? d.name.slice(0, 10) + '…' : d.name,
+      score: d.score,
+      rpg_level: rpgLvl,
+      expected_score: rpgLvl > d.score ? rpgLvl : d.score,
+      fullMark: 10,
+    };
+  });
+  const readyForReview = dims.filter(d => (d.rpg_level || 1) > d.score);
+  
   const avg = dims.length ? (dims.reduce((s, d) => s + d.score, 0) / dims.length).toFixed(1) : 0;
   const strengths = dims.filter(d => d.score >= 7).length;
   const weaknesses = dims.filter(d => d.score <= 3).length;
   const topFocus = [...dims].sort((a, b) => a.score - b.score).slice(0, 4);
+
+  const renderCustomDot = (props) => {
+    const { cx, cy, payload } = props;
+    const isGlowing = payload.rpg_level > payload.score;
+    return (
+      <g>
+        {isGlowing && <circle cx={cx} cy={cy} r={6} fill="none" stroke="#fca5a5" className="pulse-glow" />}
+        <circle cx={cx} cy={cy} r={3} fill={isGlowing ? '#fca5a5' : '#818cf8'} />
+      </g>
+    );
+  };
 
   return (
     <div className="slide-up">
       <div className="grid-2" style={{ marginBottom: 18 }}>
         {/* Radar Chart */}
         <div className="card card-glow">
-          <div className="label" style={{ marginBottom: 10 }}>Growth Radar</div>
+          <div className="flex-between" style={{ marginBottom: 10 }}>
+            <div className="label">Growth Radar</div>
+            {readyForReview.length > 0 && (
+              <div style={{ fontSize: 11, padding: '4px 10px', borderRadius: 20, background: 'rgba(239,68,68,0.15)', color: '#fca5a5', fontWeight: 700, border: '1px solid rgba(239,68,68,0.3)' }} title={readyForReview.map(d => d.name).join(', ')}>
+                🚨 {readyForReview.length} Review Required
+              </div>
+            )}
+          </div>
           <ResponsiveContainer width="100%" height={300}>
             <RadarChart data={radarData} margin={{ top: 14, right: 34, bottom: 14, left: 34 }}>
               <PolarGrid stroke="rgba(255,255,255,0.06)" />
               <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: '#94a3b8', fontWeight: 500 }} />
               <PolarRadiusAxis angle={90} domain={[0, 10]} tick={{ fontSize: 8, fill: 'rgba(255,255,255,0.15)' }} tickCount={6} />
+              <Radar dataKey="expected_score" stroke="#fca5a5" fill="transparent" strokeDasharray="3 3" strokeWidth={2} isAnimationActive={false} />
               <Radar dataKey="score" stroke="#818cf8" fill="#6366f1" fillOpacity={0.15} strokeWidth={2}
-                dot={{ fill: '#818cf8', r: 3, strokeWidth: 0 }} />
+                dot={renderCustomDot} />
               <Tooltip
                 formatter={(v) => [`${v}/10`, 'Score']}
                 contentStyle={{ fontSize: 12, borderRadius: 10, background: 'rgba(15,15,26,0.9)', border: '1px solid rgba(255,255,255,0.1)', color: '#f1f5f9', backdropFilter: 'blur(8px)' }}

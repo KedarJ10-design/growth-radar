@@ -59,4 +59,20 @@ export const api = {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   },
+
+  // ── RPG ──────────────────────────────────────────────────
+  rpgGetCharacter: () => request('/rpg/character'),
+  rpgGetStats: () => request('/rpg/stats'),
+  rpgLogTasks: (data) => request('/rpg/log-tasks', { method: 'POST', body: JSON.stringify(data) }),
+  rpgCheckBoss: (dimId) => request('/rpg/check-boss', { method: 'POST', body: JSON.stringify({ dimension_id: dimId }) }),
+  rpgCompleteBoss: (bossId, evidence) => request('/rpg/complete-boss', { method: 'POST', body: JSON.stringify({ boss_id: bossId, evidence }) }),
+  rpgDiscoverQuest: (recentActivity) => request('/rpg/side-quest/discover', { method: 'POST', body: JSON.stringify({ recent_activity: recentActivity }) }),
+  rpgCompleteQuest: (questId, evidence) => request('/rpg/side-quest/complete', { method: 'POST', body: JSON.stringify({ quest_id: questId, evidence }) }),
+  rpgGetQuests: (status) => request(`/rpg/side-quests${status ? `?status=${status}` : ''}`),
+  rpgGetXPLog: (dimId) => request(`/rpg/xp-log${dimId ? `?dimension_id=${dimId}` : ''}`),
+  rpgGetBosses: () => request('/rpg/bosses'),
+  rpgGetHeatmap: (days) => request(`/rpg/heatmap?days=${days || 90}`),
+  rpgGetNodes: (dimId) => request(`/rpg/nodes${dimId ? `?dimension_id=${dimId}` : ''}`),
+  rpgAddNode: (dimId, name) => request('/rpg/nodes', { method: 'POST', body: JSON.stringify({ dimension_id: dimId, name }) }),
+  rpgCompleteNode: (nodeId) => request(`/rpg/nodes/${nodeId}/complete`, { method: 'POST' }),
 };

@@ -18,10 +18,18 @@ import {
   getDailyLogs, addDailyLog, toggleDailyLog, deleteDailyLog, getStreak,
   saveSchedule, getSchedules, getRecentLogsForDims, getRecentSchedulesLimit,
   getStats, getAllDataForExport,
-  getSetting, setSetting
+  getSetting, setSetting,
+  // RPG queries
+  getRpgCharacter, getRpgStats, getRpgStatsForDim,
+  awardXP, applyBossBonus, addBadge,
+  getBossHistory, getAllBossFights, getAvailableBosses, createBoss, completeBoss, getBossById,
+  getSideQuests, createSideQuest, getSideQuestById, completeSideQuest,
+  getXPLog, getDailyXPSummary, addReflection, getSkillNodes, addSkillNode, completeSkillNode
 } from './db.js';
 import { generateSchedule } from './ai.js';
 import { generateExcel, generateCSV } from './export.js';
+import { calculateTaskXP, calculateLogCompletionXP, xpToLevel, levelTitle, xpToCharacterTitle, xpForNextLevel, xpInCurrentLevel, xpSpanOfLevel, shouldUnlockBoss, checkWeeklyQuestBonus, BOSS_XP, LEVEL_TITLES } from './rpg.js';
+import { generateTaskNarration, generateBossFight, generateSideQuest, generateBossVictoryNarration, judgeChallenge } from './rpg-ai.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -259,7 +267,25 @@ app.put('/api/daily-log/:id/toggle', async (req, res) => {
   try {
     const log = await toggleDailyLog(parseInt(req.params.id));
     if (!log) return res.status(404).json({ error: 'Log not found' });
-    res.json(log);
+
+    // Auto-award RPG XP when a daily log is marked as completed
+    let rpgXP = null;
+    if (log.completed && log.dimension_id) {
+      try {
+        const { difficulty, xp } = calculateLogCompletionXP(log.duration_min || 0);
+        const streak = await getStreak();
+        const dimStats = await getRpgStatsForDim(log.dimension_id);
+        const multiplier = streak.streak >= 7 ? 2.0 : 1.0;
+        const bonusMultiplier = dimStats?.xp_bonus_pct ? (1 + dimStats.xp_bonus_pct / 100) : 1.0;
+        const totalMultiplier = multiplier * bonusMultiplier;
+        const result = await awardXP(log.dimension_id, xp, 'daily_log', totalMultiplier, log.activity);
+        rpgXP = { xp: result.xpAwarded, newLevel: result.newLevel, difficulty };
+      } catch (rpgErr) {
+        console.error('RPG auto-XP error (non-fatal):', rpgErr.message);
+      }
+    }
+
+    res.json({ ...log, rpgXP });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -347,6 +373,522 @@ app.get('/api/export/:format', async (req, res) => {
     } else {
       res.status(400).json({ error: 'Format must be xlsx or csv' });
     }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── RPG Gamification ───────────────────────────────────────
+
+// Character profile
+app.get('/api/rpg/character', async (_, res) => {
+  try {
+    const character = await getRpgCharacter();
+    const stats = await getRpgStats();
+    const streak = await getStreak();
+    const availableBosses = await getAvailableBosses();
+    const activeQuests = await getSideQuests('available');
+
+    // Enrich each dimension stat with level title and progress
+    const enrichedStats = stats.map(s => ({
+      ...s,
+      level_title: levelTitle(s.level),
+      xp_to_next: xpForNextLevel(s.level),
+      xp_in_level: xpInCurrentLevel(s.total_xp, s.level),
+      xp_span: xpSpanOfLevel(s.level),
+      progress_pct: s.level >= 10 ? 100 : Math.round((xpInCurrentLevel(s.total_xp, s.level) / xpSpanOfLevel(s.level)) * 100),
+      boss_available: shouldUnlockBoss(s.level) !== null
+    }));
+
+    res.json({
+      character,
+      stats: enrichedStats,
+      streak: streak.streak,
+      available_bosses: availableBosses,
+      active_quests: activeQuests
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Log tasks (manual XP)
+app.post('/api/rpg/log-tasks', aiLimiter, async (req, res) => {
+  try {
+    const { dimension_id, tasks_completed, difficulty, combo_dimensions } = req.body;
+    if (!dimension_id || !tasks_completed?.length) {
+      return res.status(400).json({ error: 'dimension_id and tasks_completed are required' });
+    }
+
+    const streak = await getStreak();
+    const dimStats = await getRpgStatsForDim(dimension_id);
+    if (!dimStats) return res.status(404).json({ error: 'Dimension not found in RPG stats' });
+
+    const xpResult = calculateTaskXP({
+      taskCount: tasks_completed.length,
+      difficulty: difficulty || 'medium',
+      streakDays: streak.streak,
+      comboDimensions: combo_dimensions,
+      bonusPct: dimStats.xp_bonus_pct
+    });
+
+    const oldLevel = dimStats.level;
+    const award = await awardXP(dimension_id, xpResult.baseXP, 'task', xpResult.multiplier, tasks_completed.join(', '));
+    const newStats = await getRpgStatsForDim(dimension_id);
+    const levelUp = newStats.level > oldLevel;
+
+    // Check if boss should be unlocked after level up
+    let bossUnlocked = null;
+    if (levelUp) {
+      const bossTier = shouldUnlockBoss(newStats.level);
+      if (bossTier) {
+        try {
+          const bossData = await generateBossFight({
+            dimensionName: dimStats.name,
+            level: newStats.level,
+            tier: bossTier,
+            completedBosses: await getBossHistory(dimension_id)
+          });
+          const created = await createBoss({
+            dimId: dimension_id,
+            tier: bossTier,
+            name: bossData.boss_name,
+            description: bossData.boss_description,
+            rules: bossData.rules,
+            rewardXP: BOSS_XP[bossTier],
+            badgeReward: bossData.badge_reward
+          });
+          bossUnlocked = { ...bossData, id: created.id, tier: bossTier };
+        } catch (bossErr) {
+          console.error('Boss generation failed (non-fatal):', bossErr.message);
+        }
+      }
+    }
+
+    // Generate Game Master narration (AI)
+    let narration = { game_master_message: '', suggestion: null };
+    try {
+      narration = await generateTaskNarration({
+        dimensionName: dimStats.name,
+        tasksCompleted: tasks_completed,
+        xpEarned: award.xpAwarded,
+        newLevel: newStats.level,
+        levelTitle: levelTitle(newStats.level),
+        levelUp,
+        streakDays: streak.streak
+      });
+    } catch (aiErr) {
+      console.error('Game Master narration failed (non-fatal):', aiErr.message);
+      narration.game_master_message = levelUp
+        ? `Level ${newStats.level} reached. The grind continues.`
+        : `+${award.xpAwarded} XP logged. Keep pushing.`;
+    }
+
+    const character = await getRpgCharacter();
+
+    res.json({
+      xp_breakdown: tasks_completed.map((task, i) => ({
+        task,
+        base_xp: xpResult.baseXP / tasks_completed.length,
+        multiplier: xpResult.multiplier,
+        final_xp: Math.round(xpResult.finalXP / tasks_completed.length)
+      })),
+      total_xp_earned: award.xpAwarded,
+      new_total_xp: newStats.total_xp,
+      level_up: levelUp,
+      new_level: newStats.level,
+      new_title: levelTitle(newStats.level),
+      xp_to_next_level: xpForNextLevel(newStats.level) - newStats.total_xp,
+      streak_status: streak.streak >= 7
+        ? `🔥 ${streak.streak}-day streak — 2x XP active!`
+        : `Day ${streak.streak} streak 🔥 — ${7 - streak.streak} more for 2x bonus`,
+      multiplier_reasons: xpResult.multiplierReasons,
+      boss_unlocked: bossUnlocked,
+      character_title: character.character_title,
+      game_master_message: narration.game_master_message,
+      suggestion: narration.suggestion
+    });
+  } catch (e) {
+    console.error('RPG Log Tasks Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Check boss availability
+app.post('/api/rpg/check-boss', aiLimiter, async (req, res) => {
+  try {
+    const { dimension_id } = req.body;
+    const dimStats = await getRpgStatsForDim(dimension_id);
+    if (!dimStats) return res.status(404).json({ error: 'Dimension not found' });
+
+    const existingBosses = await getBossHistory(dimension_id);
+    const availableBoss = existingBosses.find(b => b.status === 'available');
+
+    if (availableBoss) {
+      return res.json({
+        boss_available: true,
+        boss: availableBoss,
+        game_master_message: `The ${availableBoss.boss_name} awaits. Are you ready?`
+      });
+    }
+
+    const bossTier = shouldUnlockBoss(dimStats.level);
+    if (!bossTier) {
+      const nextBossLevel = dimStats.level < 2 ? 2 : (Math.ceil(dimStats.level / 2) * 2);
+      return res.json({
+        boss_available: false,
+        next_boss_at: `Level ${nextBossLevel}`,
+        game_master_message: `No boss available yet. Reach Level ${nextBossLevel} to unlock the next challenge.`
+      });
+    }
+
+    // Generate a new boss fight (with fallback if AI fails)
+    let bossData;
+    try {
+      bossData = await generateBossFight({
+        dimensionName: dimStats.name,
+        level: dimStats.level,
+        tier: bossTier,
+        completedBosses: existingBosses.filter(b => b.status === 'completed')
+      });
+    } catch (aiErr) {
+      console.error('Boss AI generation failed, using fallback:', aiErr.message);
+      bossData = {
+        boss_name: `The ${dimStats.name} Trial`,
+        boss_description: `Complete a focused ${bossTier === 'mini' ? '2-hour' : bossTier === 'major' ? 'full-day' : 'multi-day'} deep work session on ${dimStats.name}. Demonstrate concrete output — code, notes, or a project.`,
+        rules: ['No distractions allowed', 'Must produce tangible output', 'Self-report with evidence'],
+        time_limit: bossTier === 'mini' ? '2 hours' : bossTier === 'major' ? '1 day' : '3 days',
+        badge_reward: `⚔️ ${dimStats.name} Warrior`,
+        game_master_message: `A challenge rises from the ${dimStats.name} domain. Prove your worth.`
+      };
+    }
+
+    const created = await createBoss({
+      dimId: dimension_id,
+      tier: bossTier,
+      name: bossData.boss_name,
+      description: bossData.boss_description || bossData.description,
+      rules: bossData.rules,
+      rewardXP: BOSS_XP[bossTier],
+      badgeReward: bossData.badge_reward
+    });
+
+    res.json({
+      boss_available: true,
+      boss: {
+        id: created.id,
+        boss_tier: bossTier,
+        boss_name: bossData.boss_name,
+        description: bossData.boss_description || bossData.description,
+        rules: bossData.rules,
+        reward_xp: BOSS_XP[bossTier],
+        badge_reward: bossData.badge_reward,
+        time_limit: bossData.time_limit
+      },
+      game_master_message: bossData.game_master_message
+    });
+  } catch (e) {
+    console.error('RPG Check Boss Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Complete a boss fight
+app.post('/api/rpg/complete-boss', aiLimiter, async (req, res) => {
+  try {
+    const { boss_id, evidence } = req.body;
+    if (!boss_id || !evidence) return res.status(400).json({ error: 'boss_id and evidence are required' });
+
+    const boss = await getBossById(boss_id);
+    if (!boss) return res.status(404).json({ error: 'Boss not found' });
+    if (boss.status !== 'available') return res.status(400).json({ error: 'Boss already completed or expired' });
+
+    const dimStats = await getRpgStatsForDim(boss.dimension_id);
+    const oldLevel = dimStats.level;
+
+    // AI Judge Evaluation
+    let judgement;
+    try {
+      judgement = await judgeChallenge({
+        challengeName: boss.boss_name,
+        rules: boss.rules, // Might be undefined or parsed string/array
+        evidence: evidence
+      });
+      if (!judgement.approved) {
+        return res.status(400).json({ error: judgement.feedback || 'The Game Master rejected your evidence. Provide more detail or a valid link.' });
+      }
+    } catch (judgeErr) {
+      console.error('Judge AI failed, falling back to accept:', judgeErr.message);
+    }
+
+    // Complete the boss
+    await completeBoss(boss_id, evidence);
+
+    // Award XP
+    const xpReward = boss.reward_xp || BOSS_XP[boss.boss_tier] || 200;
+    await awardXP(boss.dimension_id, xpReward, 'boss', 1.0, `Boss defeated: ${boss.boss_name}`);
+
+    // Apply permanent +10% bonus
+    await applyBossBonus(boss.dimension_id, 10);
+
+    // Award badge
+    if (boss.badge_reward) {
+      await addBadge(boss.badge_reward);
+    }
+
+    const newStats = await getRpgStatsForDim(boss.dimension_id);
+    const levelUp = newStats.level > oldLevel;
+    const character = await getRpgCharacter();
+
+    // Generate victory narration
+    let narration = { game_master_message: `${boss.boss_name} has fallen. +${xpReward} XP.` };
+    try {
+      narration = await generateBossVictoryNarration({
+        bossName: boss.boss_name,
+        bossTier: boss.boss_tier,
+        dimensionName: dimStats.name,
+        evidence,
+        xpAwarded: xpReward,
+        newLevel: newStats.level,
+        levelTitle: levelTitle(newStats.level),
+        badgeEarned: boss.badge_reward,
+        nextBossPreview: shouldUnlockBoss(newStats.level) ? 'Next boss tier available!' : null
+      });
+    } catch (aiErr) {
+      console.error('Boss victory narration failed (non-fatal):', aiErr.message);
+    }
+
+    res.json({
+      boss_defeated: true,
+      xp_awarded: xpReward,
+      permanent_bonus: '+10% XP on this dimension forever',
+      badge_earned: boss.badge_reward,
+      new_total_xp: newStats.total_xp,
+      level_up: levelUp,
+      new_level: newStats.level,
+      new_title: levelTitle(newStats.level),
+      character_title: character.character_title,
+      game_master_message: narration.game_master_message
+    });
+  } catch (e) {
+    console.error('RPG Complete Boss Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Discover a new side quest (AI generated)
+app.post('/api/rpg/side-quest/discover', aiLimiter, async (req, res) => {
+  try {
+    const character = await getRpgCharacter();
+    const stats = await getRpgStats();
+
+    // Pre-defined fallback quests in case AI fails
+    const fallbackQuests = [
+      { quest_name: 'The Open Source Contribution', quest_type: 'RANDOM', difficulty: 'medium', description: 'Find a bug or improvement in an open-source repo on GitHub. Fork it, fix it, and submit a pull request.', xp_reward: 150, badge_reward: '🐛 Bug Slayer', expires_in: null, dimension_affected: 'GitHub', game_master_message: 'The open source world calls. Leave your mark on a codebase that isn\'t yours.' },
+      { quest_name: 'The LinkedIn Chronicles', quest_type: 'REPEATABLE', difficulty: 'easy', description: 'Write a LinkedIn post sharing something you learned this week — a technical insight, a project update, or a career reflection.', xp_reward: 40, badge_reward: '📝 Thought Leader', expires_in: 'weekly reset', dimension_affected: 'LinkedIn', game_master_message: 'Your network is watching. Share your journey — one post at a time.' },
+      { quest_name: 'The Mentor Path', quest_type: 'RANDOM', difficulty: 'easy', description: 'Help someone debug their code — a classmate, an online forum post, or a Discord server question.', xp_reward: 30, badge_reward: '🤝 First Assist', expires_in: null, dimension_affected: 'Communication', game_master_message: 'Teaching is the highest form of understanding. Help another developer today.' },
+      { quest_name: 'The Knowledge Vault', quest_type: 'REPEATABLE', difficulty: 'easy', description: 'Read one chapter of a technical book or complete one module of an online course.', xp_reward: 20, badge_reward: '📖 Bookworm', expires_in: 'weekly reset', dimension_affected: null, game_master_message: 'Knowledge compounds silently. One chapter today, expertise tomorrow.' },
+      { quest_name: 'The Video Scroll', quest_type: 'RANDOM', difficulty: 'medium', description: 'Record yourself explaining a technical concept you recently learned. Post it anywhere or keep it private — the act of explaining is the quest.', xp_reward: 50, badge_reward: '📹 Explainer', expires_in: null, dimension_affected: 'Communication', game_master_message: 'If you can\'t explain it simply, you don\'t understand it. Prove that you do.' },
+    ];
+
+    let questData;
+    try {
+      questData = await generateSideQuest({
+        characterTitle: character.character_title,
+        dimensions: stats,
+        recentActivity: req.body.recent_activity || '',
+        weeklyQuestsDone: character.side_quests_this_week
+      });
+    } catch (aiErr) {
+      console.error('Side Quest AI generation failed, using fallback:', aiErr.message);
+      questData = fallbackQuests[Math.floor(Math.random() * fallbackQuests.length)];
+    }
+
+    const created = await createSideQuest({
+      questName: questData.quest_name,
+      questType: questData.quest_type,
+      difficulty: questData.difficulty,
+      description: questData.description,
+      dimId: stats.find(s => s.name === questData.dimension_affected)?.dimension_id || null,
+      xpReward: questData.xp_reward,
+      badgeEarned: questData.badge_reward,
+      expiresAt: questData.expires_in && questData.expires_in !== 'no expiry' && questData.expires_in !== 'weekly reset'
+        ? new Date(Date.now() + parseDuration(questData.expires_in)).toISOString()
+        : null
+    });
+
+    res.json({
+      quest: { id: created.id, ...questData },
+      weekly_progress: `${character.side_quests_this_week}/3 side quests this week${character.side_quests_this_week >= 2 ? ' — 1 more for Side Hustler badge + 50 XP!' : ''}`,
+      game_master_message: questData.game_master_message
+    });
+  } catch (e) {
+    console.error('RPG Side Quest Discover Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+function parseDuration(str) {
+  if (!str) return 7 * 24 * 60 * 60 * 1000; // default 7 days
+  const match = str.match(/(\d+)\s*(day|hour|week)/i);
+  if (!match) return 7 * 24 * 60 * 60 * 1000;
+  const num = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  if (unit === 'hour') return num * 60 * 60 * 1000;
+  if (unit === 'week') return num * 7 * 24 * 60 * 60 * 1000;
+  return num * 24 * 60 * 60 * 1000; // days
+}
+
+// Complete a side quest
+app.post('/api/rpg/side-quest/complete', async (req, res) => {
+  try {
+    const { quest_id, evidence } = req.body;
+    if (!quest_id) return res.status(400).json({ error: 'quest_id is required' });
+
+    const q = await getSideQuestById(quest_id);
+    if (!q) return res.status(404).json({ error: 'Quest not found' });
+    if (q.status !== 'available') return res.status(400).json({ error: 'Quest already completed or expired' });
+
+    // AI Judge Evaluation
+    let judgement;
+    try {
+      judgement = await judgeChallenge({
+        challengeName: q.quest_name,
+        rules: q.description,
+        evidence: evidence
+      });
+      if (!judgement.approved) {
+        return res.status(400).json({ error: judgement.feedback || 'The Game Master rejected your evidence. Provide more detail or a valid link.' });
+      }
+    } catch (judgeErr) {
+      console.error('Judge AI failed, falling back to accept:', judgeErr.message);
+    }
+
+    const quest = await completeSideQuest(quest_id, evidence || '');
+
+    // Award XP
+    if (quest.dimension_id) {
+      await awardXP(quest.dimension_id, quest.xp_reward, 'side_quest', 1.0, `Side quest: ${quest.quest_name}`);
+    } else {
+      // Global XP with no specific dimension — pick the lowest one
+      const stats = await getRpgStats();
+      if (stats.length > 0) {
+        const lowest = stats.sort((a, b) => a.total_xp - b.total_xp)[0];
+        await awardXP(lowest.dimension_id, quest.xp_reward, 'side_quest', 1.0, `Side quest: ${quest.quest_name}`);
+      }
+    }
+
+    // Award badge
+    if (quest.badge_earned) {
+      await addBadge(quest.badge_earned);
+    }
+
+    // Check weekly bonus
+    const character = await getRpgCharacter();
+    const weeklyBonus = checkWeeklyQuestBonus(character.side_quests_this_week);
+    if (weeklyBonus) {
+      await addBadge(weeklyBonus.badge);
+      // Award bonus XP to lowest dimension
+      const stats = await getRpgStats();
+      if (stats.length > 0) {
+        const lowest = stats.sort((a, b) => a.total_xp - b.total_xp)[0];
+        await awardXP(lowest.dimension_id, weeklyBonus.bonusXP, 'weekly_bonus', 1.0, 'Weekly Side Hustler bonus');
+      }
+    }
+
+    res.json({
+      quest_completed: true,
+      xp_awarded: quest.xp_reward,
+      badge_earned: quest.badge_earned || null,
+      weekly_progress: `${character.side_quests_this_week}/3 side quests this week`,
+      weekly_bonus: weeklyBonus,
+      character: character
+    });
+  } catch (e) {
+    console.error('RPG Side Quest Complete Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// List side quests
+app.get('/api/rpg/side-quests', async (req, res) => {
+  try {
+    const status = req.query.status || null;
+    res.json(await getSideQuests(status));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// XP history log
+app.get('/api/rpg/xp-log', async (req, res) => {
+  try {
+    const dimId = req.query.dimension_id || null;
+    res.json(await getXPLog(dimId, 50));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// All boss fights
+app.get('/api/rpg/bosses', async (_, res) => {
+  try { res.json(await getAllBossFights()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// RPG stats for all dimensions
+app.get('/api/rpg/stats', async (_, res) => {
+  try {
+    const stats = await getRpgStats();
+    const enriched = stats.map(s => ({
+      ...s,
+      level_title: levelTitle(s.level),
+      xp_to_next: xpForNextLevel(s.level),
+      xp_in_level: xpInCurrentLevel(s.total_xp, s.level),
+      xp_span: xpSpanOfLevel(s.level),
+      progress_pct: s.level >= 10 ? 100 : Math.round((xpInCurrentLevel(s.total_xp, s.level) / xpSpanOfLevel(s.level)) * 100)
+    }));
+    res.json(enriched);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── RPG Heatmap & Reflections & Nodes ──────────────────────
+app.get('/api/rpg/heatmap', async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 90;
+    res.json(await getDailyXPSummary(days));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/rpg/reflections', async (req, res) => {
+  try {
+    const { dimension_id, old_score, new_score, reflection } = req.body;
+    if (!dimension_id || !reflection) return res.status(400).json({ error: 'Missing required fields' });
+    const result = await addReflection({ dimension_id, old_score, new_score, reflection });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/rpg/nodes', async (req, res) => {
+  try {
+    const { dimension_id } = req.query;
+    res.json(await getSkillNodes(dimension_id));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/rpg/nodes', async (req, res) => {
+  try {
+    const { dimension_id, name } = req.body;
+    if (!dimension_id || !name) return res.status(400).json({ error: 'Missing dimension_id or name' });
+    res.json(await addSkillNode(dimension_id, name));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/rpg/nodes/:id/complete', async (req, res) => {
+  try {
+    const nodeId = req.params.id;
+    await completeSkillNode(nodeId);
+    
+    // Fetch node to get dimension_id
+    const nodes = await getSkillNodes();
+    const node = nodes.find(n => n.id == nodeId);
+    if (node) {
+      await awardXP(node.dimension_id, 25, 'skill_node', 1.0, `Completed skill node: ${node.name}`);
+    }
+    
+    res.json({ success: true, xp_awarded: 25 });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
