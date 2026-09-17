@@ -381,11 +381,13 @@ app.get('/api/export/:format', async (req, res) => {
 // Character profile
 app.get('/api/rpg/character', async (_, res) => {
   try {
-    const character = await getRpgCharacter();
-    const stats = await getRpgStats();
-    const streak = await getStreak();
-    const availableBosses = await getAvailableBosses();
-    const activeQuests = await getSideQuests('available');
+    const [character, stats, streak, availableBosses, activeQuests] = await Promise.all([
+      getRpgCharacter(),
+      getRpgStats(),
+      getStreak(),
+      getAvailableBosses(),
+      getSideQuests('available')
+    ]);
 
     // Enrich each dimension stat with level title and progress
     const enrichedStats = stats.map(s => ({
