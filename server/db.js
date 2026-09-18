@@ -149,6 +149,7 @@ export async function initDb() {
   await seedDefaults();
   await seedRpgDefaults();
   await seedRpgSkillNodes();
+  await upgradeGenericNodes();
 }
 
 // Seed RPG dimension stats for any dimension that doesn't have one yet
@@ -176,6 +177,71 @@ async function seedRpgDefaults() {
   const charState = await db.execute('SELECT total_xp FROM rpg_character WHERE id = 1');
   if (charState.rows[0].total_xp === 0) {
     await migrateHistoricalXP();
+  }
+}
+
+function getSpecificNodes(name) {
+  const lowerName = name.toLowerCase();
+  if (lowerName.includes('consistency')) {
+    return ['Daily Habit Building', 'Overcoming Procrastination', 'Time Blocking', 'Flow State Maintenance', 'Unbreakable Routine'];
+  } else if (lowerName.includes('communication') || lowerName.includes('comm')) {
+    return ['Active Listening', 'Clear Articulation', 'Public Speaking Basics', 'Conflict Resolution', 'Persuasive Storytelling'];
+  } else if (lowerName.includes('goal focus') || lowerName.includes('focus')) {
+    return ['Setting SMART Goals', 'Prioritization (Eisenhower)', 'Deep Work Sessions', 'Distraction Elimination', 'Long-term Vision Alignment'];
+  } else if (lowerName.includes('networking') || lowerName.includes('net')) {
+    return ['Cold Outreach Strategy', 'Building Rapport', 'Maintaining Connections', 'Value-First Interactions', 'Community Leadership'];
+  } else if (lowerName.includes('interview prep') || lowerName.includes('int')) {
+    return ['Resume Optimization', 'Behavioral STAR Method', 'Mock Interviews', 'Salary Negotiation', 'System Design Whiteboarding'];
+  } else if (lowerName.includes('mahayatri') || lowerName.includes('proj')) {
+    return ['Project Scoping', 'Architecture Planning', 'MVP Execution', 'User Feedback Integration', 'Production Launch'];
+  } else if (lowerName.includes('linkedin') || lowerName.includes('li')) {
+    return ['Profile Optimization', 'Writing Engaging Hooks', 'Content Consistency', 'Networking in DMs', 'Building a Personal Brand'];
+  } else if (lowerName.includes('github') || lowerName.includes('gh')) {
+    return ['Markdown & READMEs', 'Git Workflow (Rebase/Merge)', 'Open Source Contributions', 'Automating with Actions', 'Building a Portfolio'];
+  } else if (lowerName.includes('python')) {
+    return ['Syntax & Data Types', 'Object-Oriented Python', 'List Comprehensions', 'Decorators & Generators', 'Data Analysis (Pandas)'];
+  } else if (lowerName.includes('sql')) {
+    return ['CRUD Operations', 'Complex Joins', 'Window Functions', 'Query Optimization', 'Database Normalization'];
+  } else if (lowerName.includes('linux')) {
+    return ['Command Line Navigation', 'File Permissions', 'Bash Scripting Basics', 'Process Management', 'Networking & SSH'];
+  } else {
+    return [
+      `Foundational ${name}`,
+      `Intermediate ${name}`,
+      `Advanced ${name}`,
+      `${name} Best Practices`,
+      `${name} Mastery`
+    ];
+  }
+}
+
+async function upgradeGenericNodes() {
+  const dimensions = await db.execute('SELECT id, name FROM dimensions');
+  
+  const statements = [];
+  for (const dim of dimensions.rows) {
+    const specifics = getSpecificNodes(dim.name);
+    // If it falls back to generic, there's no upgrade to do
+    if (specifics[0].startsWith('Foundational ')) continue;
+
+    const oldNames = [
+      `Foundational ${dim.name}`,
+      `Intermediate ${dim.name}`,
+      `Advanced ${dim.name}`,
+      `${dim.name} Best Practices`,
+      `${dim.name} Mastery`
+    ];
+
+    for (let i = 0; i < 5; i++) {
+      statements.push({
+        sql: 'UPDATE rpg_skill_nodes SET name = ? WHERE dimension_id = ? AND name = ?',
+        args: [specifics[i], dim.id, oldNames[i]]
+      });
+    }
+  }
+
+  if (statements.length > 0) {
+    await db.batch(statements, 'write');
   }
 }
 
@@ -212,13 +278,7 @@ async function seedRpgSkillNodes() {
         nodes = ['Spring Boot Fundamentals', 'JPA/Hibernate', 'Java Concurrency', 'JVM Memory Model', 'JUnit Testing'];
         break;
       default:
-        nodes = [
-          `Foundational ${dim.name}`,
-          `Intermediate ${dim.name}`,
-          `Advanced ${dim.name}`,
-          `${dim.name} Best Practices`,
-          `${dim.name} Mastery`
-        ];
+        nodes = getSpecificNodes(dim.name);
     }
     for (const nodeName of nodes) {
       statements.push({
