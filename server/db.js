@@ -944,7 +944,7 @@ export async function getQuestStack(status = null) {
     sql += ' WHERE qs.status = ?';
     args.push(status);
   }
-  sql += ' ORDER BY CASE qs.priority WHEN \'do_first\' THEN 1 WHEN \'schedule\' THEN 2 WHEN \'delegate\' THEN 3 WHEN \'backlog\' THEN 4 END, qs.sort_order ASC, qs.created_at DESC';
+  sql += ' ORDER BY CASE qs.priority WHEN \'do_first\' THEN 1 WHEN \'schedule\' THEN 2 WHEN \'delegate\' THEN 3 WHEN \'backlog\' THEN 4 END, CASE WHEN qs.due_date IS NOT NULL AND qs.due_date != \'\' THEN qs.due_date ELSE \'9999-99-99\' END ASC, qs.sort_order ASC, qs.created_at DESC';
   const result = await db.execute({ sql, args });
   return result.rows;
 }
@@ -1023,4 +1023,13 @@ export async function getQuestStackStats() {
     ongoing: ongoing.rows[0].c,
     today_completed: todayCompleted.rows[0].c
   };
+}
+
+export async function reorderQuestStack(updates) {
+  for (const u of updates) {
+    await db.execute({
+      sql: 'UPDATE quest_stack SET sort_order = ? WHERE id = ?',
+      args: [u.sort_order, u.id]
+    });
+  }
 }

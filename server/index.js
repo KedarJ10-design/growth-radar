@@ -26,7 +26,7 @@ import {
   getSideQuests, createSideQuest, getSideQuestById, completeSideQuest,
   getXPLog, getDailyXPSummary, addReflection, getSkillNodes, addSkillNode, completeSkillNode,
   // Quest Stack
-  getQuestStack, addQuestItem, updateQuestItem, deleteQuestItem, getQuestItemById, completeQuestItem, getQuestStackStats
+  getQuestStack, addQuestItem, updateQuestItem, deleteQuestItem, getQuestItemById, completeQuestItem, getQuestStackStats, reorderQuestStack
 } from './db.js';
 import { generateSchedule } from './ai.js';
 import { generateExcel, generateCSV } from './export.js';
@@ -956,6 +956,15 @@ app.put('/api/quest-stack/:id', async (req, res) => {
 app.delete('/api/quest-stack/:id', async (req, res) => {
   try {
     await deleteQuestItem(req.params.id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/quest-stack/reorder', async (req, res) => {
+  try {
+    const { updates } = req.body;
+    if (!Array.isArray(updates)) return res.status(400).json({ error: 'Expected updates array' });
+    await reorderQuestStack(updates);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

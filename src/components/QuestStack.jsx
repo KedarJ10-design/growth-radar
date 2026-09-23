@@ -140,6 +140,29 @@ export default function QuestStack({ dims }) {
     } catch (e) { notify('❌ ' + e.message); }
   };
 
+  const handleMove = async (laneItems, currentItem, direction) => {
+    // Only items without due dates can be manually reordered
+    const manualItems = laneItems.filter(i => !i.due_date);
+    const idx = manualItems.findIndex(i => i.id === currentItem.id);
+    if (idx === -1) return;
+    
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= manualItems.length) return;
+    
+    // Swap
+    const temp = manualItems[idx];
+    manualItems[idx] = manualItems[targetIdx];
+    manualItems[targetIdx] = temp;
+    
+    // Generate new order
+    const updates = manualItems.map((item, index) => ({ id: item.id, sort_order: index + 1 }));
+    
+    try {
+      await api.reorderQuestStack(updates);
+      loadItems();
+    } catch (e) { notify('❌ ' + e.message); }
+  };
+
   // Group items by priority
   const grouped = {};
   for (const p of Object.keys(PRIORITY_CONFIG)) {
@@ -239,7 +262,8 @@ export default function QuestStack({ dims }) {
                     return (
                       <TaskCard key={item.id} item={item} num={globalCounter} dims={dims}
                         onEdit={openEdit} onDelete={handleDelete} onComplete={handleComplete}
-                        onStatusChange={handleStatusChange} onPriorityChange={handlePriorityChange} />
+                        onStatusChange={handleStatusChange} onPriorityChange={handlePriorityChange}
+                        onMove={(!item.due_date && lane.filter(i => !i.due_date).length > 1) ? (dir) => handleMove(lane, item, dir) : null} />
                     );
                   })}
                 </div>
@@ -366,7 +390,7 @@ export default function QuestStack({ dims }) {
   );
 }
 
-function TaskCard({ item, num, dims, onEdit, onDelete, onComplete, onStatusChange, onPriorityChange, isCompleted }) {
+function TaskCard({ item, num, dims, onEdit, onDelete, onComplete, onStatusChange, onPriorityChange, onMove, isCompleted }) {
   const [showActions, setShowActions] = useState(false);
   const icon = TYPE_ICONS[item.type] || '📝';
   const pCfg = PRIORITY_CONFIG[item.priority] || PRIORITY_CONFIG.backlog;
@@ -445,6 +469,13 @@ function TaskCard({ item, num, dims, onEdit, onDelete, onComplete, onStatusChang
                 <option key={k} value={k}>{v.label}</option>
               ))}
             </select>
+
+            {onMove && (
+              <>
+                <button className="quest-action-btn" title="Move Up" onClick={() => onMove('up')}>⬆️</button>
+                <button className="quest-action-btn" title="Move Down" onClick={() => onMove('down')}>⬇️</button>
+              </>
+            )}
 
             <button className="quest-action-btn" title="Edit" onClick={() => onEdit(item)}>✏️</button>
           </>

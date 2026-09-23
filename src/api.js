@@ -82,4 +82,5 @@ export const api = {
   updateQuestItem: (id, data) => request(`/quest-stack/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteQuestItem: (id) => request(`/quest-stack/${id}`, { method: 'DELETE' }),
   completeQuestItem: (id) => request(`/quest-stack/${id}/complete`, { method: 'POST' }),
+  reorderQuestStack: (updates) => request('/quest-stack/reorder', { method: 'PUT', body: JSON.stringify({ updates }) }),
 };
