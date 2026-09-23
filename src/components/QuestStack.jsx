@@ -25,7 +25,6 @@ const STATUS_TABS = [
 ];
 
 export default function QuestStack({ dims }) {
-  const [items, setItems] = useState([]);
   const [stats, setStats] = useState({ total: 0, completed: 0, ongoing: 0, today_completed: 0 });
   const [loading, setLoading] = useState(true);
   const [statusTab, setStatusTab] = useState('todo');
@@ -40,17 +39,22 @@ export default function QuestStack({ dims }) {
     dimension_id: '', due_date: '', est_hours: '', notes: ''
   });
 
-  useEffect(() => { loadItems(); }, [statusTab]);
+  const [allItems, setAllItems] = useState([]); // Store all items
+
+  useEffect(() => { loadItems(); }, []); // Run once on mount
 
   const loadItems = async () => {
     setLoading(true);
     try {
-      const data = await api.getQuestStack(statusTab === 'all' ? null : statusTab);
-      setItems(data.items || []);
+      const data = await api.getQuestStack(null); // Fetch all
+      setAllItems(data.items || []);
       setStats(data.stats || {});
     } catch (e) { console.error('Quest load error:', e); }
     setLoading(false);
   };
+
+  // Filter items based on active tab
+  const items = allItems.filter(item => item.status === statusTab);
 
   const notify = (m) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
 
