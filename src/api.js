@@ -75,4 +75,11 @@ export const api = {
   rpgGetNodes: (dimId) => request(`/rpg/nodes${dimId ? `?dimension_id=${dimId}` : ''}`),
   rpgAddNode: (dimId, name) => request('/rpg/nodes', { method: 'POST', body: JSON.stringify({ dimension_id: dimId, name }) }),
   rpgCompleteNode: (nodeId) => request(`/rpg/nodes/${nodeId}/complete`, { method: 'POST' }),
+
+  // ── Quest Stack ──────────────────────────────────────────
+  getQuestStack: (status) => request(`/quest-stack${status ? `?status=${status}` : ''}`),
+  addQuestItem: (data) => request('/quest-stack', { method: 'POST', body: JSON.stringify(data) }),
+  updateQuestItem: (id, data) => request(`/quest-stack/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteQuestItem: (id) => request(`/quest-stack/${id}`, { method: 'DELETE' }),
+  completeQuestItem: (id) => request(`/quest-stack/${id}/complete`, { method: 'POST' }),
 };

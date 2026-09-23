@@ -11,11 +11,13 @@ import Settings from './components/Settings';
 import PinGate from './components/PinGate';
 import PrivacyPolicy from './components/PrivacyPolicy';
 import RPGProfile from './components/RPGProfile';
+import QuestStack from './components/QuestStack';
 
 const TABS = [
   ['dashboard',  '📊 Dashboard'],
   ['dimensions', '🎚 Dimensions'],
   ['dailylog',   '📝 Daily Log'],
+  ['queststack', '📋 Quest Stack'],
   ['rpg',        '🎮 RPG'],
   ['schedule',   '✨ AI Schedule'],
   ['history',    '📈 History'],
@@ -157,7 +159,7 @@ export default function App() {
       </div>
 
       {/* Category Filter */}
-      {!['add', 'schedule', 'dailylog', 'settings', 'rpg'].includes(tab) && (
+      {!['add', 'schedule', 'dailylog', 'settings', 'rpg', 'queststack'].includes(tab) && (
         <div style={{ padding: '14px 32px 6px', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {allCats.map(c => {
             const col = catColor(c === 'All' ? 'Other' : c);
@@ -178,6 +180,7 @@ export default function App() {
         {tab === 'dashboard'  && <Dashboard dims={shown} filter={filter} />}
         {tab === 'dimensions' && <Dimensions dims={shown} onUpdateScore={updateScore} onRemove={removeDim} />}
         {tab === 'dailylog'   && <DailyLog dims={dims} />}
+        {tab === 'queststack' && <QuestStack dims={dims} />}
         {tab === 'rpg'        && <RPGProfile dims={dims} />}
         {tab === 'schedule'   && <Schedule dims={dims} onGenerate={handleGenerateSchedule} generatedSchedule={generatedSchedule} loading={scheduleLoading} error={scheduleError} />}
         {tab === 'history'    && <History history={history} dims={dims} />}

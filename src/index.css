@@ -476,3 +476,74 @@ input[type="range"]::-webkit-slider-thumb:hover {
   pointer-events: none;
   animation: float-up-fade 1s ease-out forwards;
 }
+
+/* ── Quest Stack ────────────────────────────────────────────── */
+.quest-modal-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.quest-modal {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 16px; padding: 24px; width: 100%; max-width: 520px;
+  max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+}
+.quest-label {
+  display: block; font-size: 12px; font-weight: 600;
+  color: var(--text-muted); margin-bottom: 6px; margin-top: 12px;
+}
+.quest-input {
+  width: 100%; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+  border: 1px solid var(--border); background: rgba(255,255,255,0.04);
+  color: var(--text-primary); font-family: 'Inter', sans-serif;
+  margin-bottom: 4px; transition: border-color 0.2s; box-sizing: border-box;
+}
+.quest-input:focus {
+  outline: none; border-color: var(--accent);
+}
+.quest-type-btn {
+  padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--border); background: rgba(255,255,255,0.03);
+  color: var(--text-muted); cursor: pointer; transition: all 0.2s;
+}
+.quest-type-btn.active {
+  border-color: var(--accent); background: var(--accent-bg); color: var(--accent-light);
+}
+.quest-type-btn:hover { border-color: var(--border-hover); }
+
+.quest-card {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-radius: 10px; gap: 8px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent); transition: all 0.2s;
+}
+.quest-card:hover {
+  background: var(--bg-card-hover); border-color: var(--border-hover);
+}
+
+.quest-card-actions {
+  display: flex; align-items: center; gap: 4px;
+  transition: opacity 0.2s; flex-shrink: 0;
+}
+
+.quest-action-btn {
+  width: 30px; height: 30px; border-radius: 6px; font-size: 14px;
+  border: none; background: transparent; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.2s;
+}
+.quest-action-btn:hover { background: rgba(255,255,255,0.08); }
+
+.quest-priority-select {
+  padding: 4px 6px; border-radius: 6px; font-size: 11px;
+  border: 1px solid var(--border); background: rgba(255,255,255,0.04);
+  color: var(--text-muted); cursor: pointer; font-family: 'Inter', sans-serif;
+}
+.quest-priority-select:focus { outline: none; border-color: var(--accent); }
+
+/* Mobile: always show actions */
+@media (max-width: 640px) {
+  .quest-card-actions { opacity: 1 !important; }
+  .quest-card { flex-wrap: wrap; }
+}

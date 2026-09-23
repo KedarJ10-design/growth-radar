@@ -46,6 +46,7 @@ export async function initDb() {
       duration_min INTEGER DEFAULT 0,
       notes        TEXT DEFAULT '',
       completed    INTEGER NOT NULL DEFAULT 0,
+      xp_awarded   INTEGER NOT NULL DEFAULT 0,
       created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
       FOREIGN KEY (dimension_id) REFERENCES dimensions(id) ON DELETE SET NULL
     );
@@ -144,12 +145,44 @@ export async function initDb() {
       created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
       FOREIGN KEY (dimension_id) REFERENCES dimensions(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS quest_stack (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      title           TEXT NOT NULL,
+      type            TEXT NOT NULL DEFAULT 'task',
+      priority        TEXT NOT NULL DEFAULT 'backlog',
+      dimension_id    TEXT,
+      due_date        TEXT,
+      est_hours       REAL DEFAULT 0,
+      notes           TEXT DEFAULT '',
+      status          TEXT NOT NULL DEFAULT 'todo',
+      sort_order      INTEGER NOT NULL DEFAULT 0,
+      completed_at    TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+      FOREIGN KEY (dimension_id) REFERENCES dimensions(id) ON DELETE SET NULL
+    );
   `);
 
   await seedDefaults();
   await seedRpgDefaults();
   await seedRpgSkillNodes();
   await upgradeGenericNodes();
+  await applyMigrations();
+}
+
+// Safely apply schema migrations to existing databases
+async function applyMigrations() {
+  try {
+    const tableInfo = await db.execute("PRAGMA table_info(daily_logs)");
+    const hasXpAwarded = tableInfo.rows.some(row => row.name === 'xp_awarded');
+    
+    if (!hasXpAwarded) {
+      await db.execute("ALTER TABLE daily_logs ADD COLUMN xp_awarded INTEGER NOT NULL DEFAULT 0");
+      console.log('✅ Migrated database: Added xp_awarded column to daily_logs');
+    }
+  } catch (err) {
+    console.error('Migration error:', err.message);
+  }
 }
 
 // Seed RPG dimension stats for any dimension that doesn't have one yet
@@ -473,10 +506,10 @@ export async function getRecentLogsForDims(dimIds, limit = 15) {
   return result.rows;
 }
 
-export async function addDailyLog({ date, dimension_id, activity, duration_min, notes }) {
+export async function addDailyLog({ date, dimension_id, activity, duration_min, notes, xp_awarded }) {
   const result = await db.execute({
-    sql: 'INSERT INTO daily_logs (date, dimension_id, activity, duration_min, notes, completed) VALUES (?, ?, ?, ?, ?, 0)',
-    args: [date, dimension_id || null, activity, duration_min || 0, notes || '']
+    sql: 'INSERT INTO daily_logs (date, dimension_id, activity, duration_min, notes, completed, xp_awarded) VALUES (?, ?, ?, ?, ?, 0, ?)',
+    args: [date, dimension_id || null, activity, duration_min || 0, notes || '', xp_awarded ? 1 : 0]
   });
   const getRes = await db.execute({
     sql: 'SELECT dl.*, d.name as dim_name, d.category as dim_category FROM daily_logs dl LEFT JOIN dimensions d ON dl.dimension_id = d.id WHERE dl.id = ?',
@@ -495,6 +528,13 @@ export async function toggleDailyLog(id) {
     args: [id]
   });
   return getRes.rows[0];
+}
+
+export async function markXPAwarded(logId) {
+  await db.execute({
+    sql: 'UPDATE daily_logs SET xp_awarded = 1 WHERE id = ?',
+    args: [logId]
+  });
 }
 
 export async function deleteDailyLog(id) {
@@ -891,4 +931,96 @@ export async function completeSkillNode(nodeId) {
     sql: 'UPDATE rpg_skill_nodes SET is_completed = 1 WHERE id = ?',
     args: [nodeId]
   });
+}
+
+// ── Quest Stack Queries ───────────────────────────────────
+
+export async function getQuestStack(status = null) {
+  let sql = `SELECT qs.*, d.name as dimension_name, d.category as dimension_category 
+             FROM quest_stack qs 
+             LEFT JOIN dimensions d ON qs.dimension_id = d.id`;
+  const args = [];
+  if (status) {
+    sql += ' WHERE qs.status = ?';
+    args.push(status);
+  }
+  sql += ' ORDER BY CASE qs.priority WHEN \'do_first\' THEN 1 WHEN \'schedule\' THEN 2 WHEN \'delegate\' THEN 3 WHEN \'backlog\' THEN 4 END, qs.sort_order ASC, qs.created_at DESC';
+  const result = await db.execute({ sql, args });
+  return result.rows;
+}
+
+export async function addQuestItem({ title, type, priority, dimension_id, due_date, est_hours, notes }) {
+  // Get next sort_order for this priority
+  const orderResult = await db.execute({
+    sql: 'SELECT COALESCE(MAX(sort_order), 0) + 1 as next FROM quest_stack WHERE priority = ? AND status != \'completed\'',
+    args: [priority || 'backlog']
+  });
+  const sortOrder = orderResult.rows[0].next;
+
+  const result = await db.execute({
+    sql: `INSERT INTO quest_stack (title, type, priority, dimension_id, due_date, est_hours, notes, sort_order) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [title, type || 'task', priority || 'backlog', dimension_id || null, due_date || null, est_hours || 0, notes || '', sortOrder]
+  });
+  return { id: Number(result.lastInsertRowid), title, type, priority, dimension_id, due_date, est_hours, notes, status: 'todo', sort_order: sortOrder };
+}
+
+export async function updateQuestItem(id, fields) {
+  const allowed = ['title', 'type', 'priority', 'dimension_id', 'due_date', 'est_hours', 'notes', 'status', 'sort_order'];
+  const updates = [];
+  const args = [];
+  for (const [k, v] of Object.entries(fields)) {
+    if (allowed.includes(k)) {
+      updates.push(`${k} = ?`);
+      args.push(v);
+    }
+  }
+  if (updates.length === 0) return getQuestItemById(id);
+  args.push(id);
+  await db.execute({
+    sql: `UPDATE quest_stack SET ${updates.join(', ')} WHERE id = ?`,
+    args
+  });
+  return getQuestItemById(id);
+}
+
+export async function deleteQuestItem(id) {
+  await db.execute({
+    sql: 'DELETE FROM quest_stack WHERE id = ?',
+    args: [id]
+  });
+}
+
+export async function getQuestItemById(id) {
+  const result = await db.execute({
+    sql: `SELECT qs.*, d.name as dimension_name, d.category as dimension_category 
+          FROM quest_stack qs 
+          LEFT JOIN dimensions d ON qs.dimension_id = d.id 
+          WHERE qs.id = ?`,
+    args: [id]
+  });
+  return result.rows[0] || null;
+}
+
+export async function completeQuestItem(id) {
+  await db.execute({
+    sql: "UPDATE quest_stack SET status = 'completed', completed_at = datetime('now','localtime') WHERE id = ?",
+    args: [id]
+  });
+  return getQuestItemById(id);
+}
+
+export async function getQuestStackStats() {
+  const [total, completed, ongoing, todayCompleted] = await Promise.all([
+    db.execute('SELECT COUNT(*) as c FROM quest_stack'),
+    db.execute("SELECT COUNT(*) as c FROM quest_stack WHERE status = 'completed'"),
+    db.execute("SELECT COUNT(*) as c FROM quest_stack WHERE status = 'ongoing'"),
+    db.execute("SELECT COUNT(*) as c FROM quest_stack WHERE status = 'completed' AND date(completed_at) = date('now','localtime')")
+  ]);
+  return {
+    total: total.rows[0].c,
+    completed: completed.rows[0].c,
+    ongoing: ongoing.rows[0].c,
+    today_completed: todayCompleted.rows[0].c
+  };
 }

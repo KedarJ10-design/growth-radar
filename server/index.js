@@ -15,7 +15,7 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 import {
   initDb, getAllDimensions, addDimension, updateDimension, deleteDimension,
   createSnapshot, getAllSnapshots,
-  getDailyLogs, addDailyLog, toggleDailyLog, deleteDailyLog, getStreak,
+  getDailyLogs, addDailyLog, toggleDailyLog, deleteDailyLog, getStreak, markXPAwarded,
   saveSchedule, getSchedules, getRecentLogsForDims, getRecentSchedulesLimit,
   getStats, getAllDataForExport,
   getSetting, setSetting,
@@ -24,7 +24,9 @@ import {
   awardXP, applyBossBonus, addBadge,
   getBossHistory, getAllBossFights, getAvailableBosses, createBoss, completeBoss, getBossById,
   getSideQuests, createSideQuest, getSideQuestById, completeSideQuest,
-  getXPLog, getDailyXPSummary, addReflection, getSkillNodes, addSkillNode, completeSkillNode
+  getXPLog, getDailyXPSummary, addReflection, getSkillNodes, addSkillNode, completeSkillNode,
+  // Quest Stack
+  getQuestStack, addQuestItem, updateQuestItem, deleteQuestItem, getQuestItemById, completeQuestItem, getQuestStackStats
 } from './db.js';
 import { generateSchedule } from './ai.js';
 import { generateExcel, generateCSV } from './export.js';
@@ -270,7 +272,7 @@ app.put('/api/daily-log/:id/toggle', async (req, res) => {
 
     // Auto-award RPG XP when a daily log is marked as completed
     let rpgXP = null;
-    if (log.completed && log.dimension_id) {
+    if (log.completed && log.dimension_id && !log.xp_awarded) {
       try {
         const { difficulty, xp } = calculateLogCompletionXP(log.duration_min || 0);
         const streak = await getStreak();
@@ -279,6 +281,11 @@ app.put('/api/daily-log/:id/toggle', async (req, res) => {
         const bonusMultiplier = dimStats?.xp_bonus_pct ? (1 + dimStats.xp_bonus_pct / 100) : 1.0;
         const totalMultiplier = multiplier * bonusMultiplier;
         const result = await awardXP(log.dimension_id, xp, 'daily_log', totalMultiplier, log.activity);
+        
+        // Mark XP as permanently awarded so toggling this log again won't give double XP
+        await markXPAwarded(log.id);
+        log.xp_awarded = 1;
+
         rpgXP = { xp: result.xpAwarded, newLevel: result.newLevel, difficulty };
       } catch (rpgErr) {
         console.error('RPG auto-XP error (non-fatal):', rpgErr.message);
@@ -892,6 +899,145 @@ app.post('/api/rpg/nodes/:id/complete', async (req, res) => {
     
     res.json({ success: true, xp_awarded: 25 });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Quest Stack ─────────────────────────────────────────────
+
+const QUEST_XP = {
+  task: 15,
+  podcast: 10,
+  course: 10,
+  certification: 50,
+  project: 30,
+  goal: 20
+};
+
+// Get all quest stack items
+app.get('/api/quest-stack', async (req, res) => {
+  try {
+    const status = req.query.status || null;
+    const [items, stats] = await Promise.all([
+      getQuestStack(status),
+      getQuestStackStats()
+    ]);
+    res.json({ items, stats });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Add a new quest item
+app.post('/api/quest-stack', async (req, res) => {
+  try {
+    const { title, type, priority, dimension_id, due_date, est_hours, notes } = req.body;
+    if (!title) return res.status(400).json({ error: 'Title is required' });
+    const item = await addQuestItem({ title, type, priority, dimension_id, due_date, est_hours, notes });
+    res.json(item);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Update a quest item (edit, change priority, change status)
+app.put('/api/quest-stack/:id', async (req, res) => {
+  try {
+    const item = await getQuestItemById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'Quest item not found' });
+
+    const oldStatus = item.status;
+    const updated = await updateQuestItem(req.params.id, req.body);
+
+    // Award +5 XP "starting bonus" when moving to ongoing
+    if (oldStatus === 'todo' && req.body.status === 'ongoing' && item.dimension_id) {
+      await awardXP(item.dimension_id, 5, 'quest_start', 1.0, `Started: ${item.title}`);
+    }
+
+    res.json(updated);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Delete a quest item
+app.delete('/api/quest-stack/:id', async (req, res) => {
+  try {
+    await deleteQuestItem(req.params.id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Complete a quest item
+app.post('/api/quest-stack/:id/complete', async (req, res) => {
+  try {
+    const item = await getQuestItemById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'Quest item not found' });
+    if (item.status === 'completed') return res.status(400).json({ error: 'Already completed' });
+
+    const completed = await completeQuestItem(req.params.id);
+    const xpAmount = QUEST_XP[item.type] || QUEST_XP.task;
+
+    let xpResult = null;
+    let radarRecommendation = null;
+
+    // Award XP to linked dimension
+    if (item.dimension_id) {
+      xpResult = await awardXP(item.dimension_id, xpAmount, `quest_stack_${item.type}`, 1.0, `Completed: ${item.title}`);
+
+      // Check if radar score should be bumped
+      const dimStats = await getRpgStatsForDim(item.dimension_id);
+      if (dimStats) {
+        const completedInDim = await getQuestStack('completed');
+        const dimCompleted = completedInDim.filter(q => q.dimension_id === item.dimension_id).length;
+        // Recommend +1 radar bump every 5 completions, or for certifications/projects
+        if (item.type === 'certification' || item.type === 'project' || dimCompleted % 5 === 0) {
+          radarRecommendation = {
+            dimension_id: item.dimension_id,
+            dimension_name: item.dimension_name || dimStats.name,
+            current_score: dimStats.score,
+            suggested_score: Math.min(10, dimStats.score + 1),
+            reason: item.type === 'certification'
+              ? `🏆 You completed a certification! Consider bumping your ${dimStats.name} score.`
+              : item.type === 'project'
+                ? `🛠️ You shipped a project! Consider bumping your ${dimStats.name} score.`
+                : `🔥 You\'ve completed ${dimCompleted} tasks in ${dimStats.name}! Consider bumping your score.`
+          };
+        }
+      }
+    } else {
+      // No dimension linked — award to global character only
+      await awardXP(null, 0, `quest_stack_${item.type}`, 1.0, `Completed: ${item.title}`);
+    }
+
+    // Auto-log to daily logs (completed: 0 to prevent double XP — XP already awarded above)
+    const today = new Date().toISOString().split('T')[0];
+    try {
+      await addDailyLog({
+        date: today,
+        dimension_id: item.dimension_id || null,
+        activity: `✅ ${item.title}`,
+        duration_min: Math.round((item.est_hours || 0) * 60) || 30,
+        notes: `Completed from Quest Stack (${item.type}) — XP already awarded`,
+        xp_awarded: true // Flag that XP has already been given for this activity
+      });
+    } catch (logErr) {
+      console.error('Quest auto-log failed (non-fatal):', logErr.message);
+    }
+
+    // Check daily completion streak bonus
+    const stats = await getQuestStackStats();
+    let streakBonus = null;
+    if (stats.today_completed >= 3 && item.dimension_id) {
+      streakBonus = { xp: 20, message: '🔥 Daily Quest Streak! 3+ tasks completed today (+20 XP bonus)' };
+      await awardXP(item.dimension_id, 20, 'quest_streak_bonus', 1.0, 'Daily Quest Streak: 3+ tasks completed today');
+    }
+
+    res.json({
+      completed: true,
+      item: completed,
+      xp_awarded: xpAmount,
+      xp_result: xpResult,
+      radar_recommendation: radarRecommendation,
+      streak_bonus: streakBonus,
+      stats
+    });
+  } catch (e) {
+    console.error('Quest Complete Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── Serve frontend in production ───────────────────────────
