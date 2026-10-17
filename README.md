@@ -210,7 +210,7 @@ Create `server/.env`:
 
 ```env
 # Security
-APP_PIN=976312
+APP_PIN=******
 PORT=3001
 
 # AI Services
@@ -231,7 +231,7 @@ TURSO_AUTH_TOKEN=your_turso_token
 npm run dev
 
 # Open http://localhost:3000
-# Enter PIN: 976312
+# Enter PIN: ******
 ```
 
 ---
